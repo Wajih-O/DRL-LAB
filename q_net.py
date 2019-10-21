@@ -1,33 +1,125 @@
+import abc
+from typing import Tuple
+
+import numpy as np
+
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
 
 
-class QFCNet(nn.Module):
-    """Actor (Policy) Model. 2x(FC hidden layer + Relu activation) + FC"""
+def hidden_init(layer):
+    fan_in = layer.weight.data.size()[0]
+    lim = 1. / np.sqrt(fan_in)
+    return (-lim, lim)
 
-    def __init__(self, state_size: int, action_size: int, seed: int = 0, fc1_units: int = 64,
-                 fc2_units: int = 64):
+
+class QFCNet(nn.Module):
+    """Q fully-connected-Network . 2x(FC hidden layer + Relu activation) + FC"""
+
+    def __init__(self, state_size: int, action_size: int, layers: Tuple[int], seed: int = 0):
         """Initialize parameters and build model.
 
         :param state_size: Dimension of each state
         :param action_size: Dimension of each action
         :param seed: Random seed
-        :param fc1_units: Number of nodes in first hidden layer
-        :param fc2_units: Number of nodes in second hidden layer
+        :param layers: FC layers defined by their size (neurones number)
         """
         super(QFCNet, self).__init__()
         self.seed = torch.manual_seed(seed)
-        self.fc1 = nn.Linear(state_size, fc1_units)
-        self.fc2 = nn.Linear(fc1_units, fc2_units)
-        self.fc3 = nn.Linear(fc2_units, action_size)
+        self.layers_dim = [state_size] + list(layers) + [action_size]
+        self.layers = nn.ModuleList(
+            [nn.Linear(in_layer, out_layer) for in_layer, out_layer in
+             zip(self.layers_dim, self.layers_dim[1:])])
+
+    def forward(self, state):
+        """Forward input"""
+        nn_output = state
+        for layer in self.layers[:-1]:
+            nn_output = F.relu(layer(nn_output))
+        return self.layers[-1](nn_output)
+
+    def action_size(self):
+        return self.layers[-1].out_features
+
+
+class ActorFCNet(nn.Module):
+    """Actor network fully-connected-Network . 2x(FC hidden layer + Relu activation) + FC"""
+
+    def __init__(self, state_size: int, action_size: int, layers: Tuple[int], seed: int = 0):
+        """Initialize parameters and build model.
+
+        :param state_size: Dimension of each state
+        :param action_size: Dimension of each action
+        :param seed: Random seed
+        :param layers: FC layers defined by their size (neurones number)
+        """
+
+        super(ActorFCNet, self).__init__()
+        self.seed = torch.manual_seed(seed)
+        self.layers_dim = [state_size] + list(layers) + [action_size]
+        self.layers = nn.ModuleList(
+            [nn.Linear(in_layer, out_layer) for in_layer, out_layer in
+             zip(self.layers_dim, self.layers_dim[1:])])
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        for layer in self.layers[:-1]:
+            layer.weight.data.uniform_(*hidden_init(layer))
+        self.layers[-1].weight.data.uniform_(-3e-3, 3e-3)
 
     def forward(self, state):
         """Build a network that maps state -> action values."""
-        return self.fc3(F.relu(self.fc2(F.relu(self.fc1(state)))))
+        nn_output = state
+        for layer in self.layers[:-1]:
+            nn_output = F.relu(layer(nn_output))
+        return F.tanh(self.layers[-1](nn_output))
 
     def action_size(self):
-        return self.fc3.out_features
+        """ Here the action size represents the dimension of a continuous output"""
+        return self.layers[-1].out_features
+
+
+class CriticFCNet(nn.Module):
+    """ Critic Fully-Connected network """
+
+    def __init__(self, state_size, action_size, state_rep_layers: Tuple[int] = (256,),
+                 critic_layers: Tuple[int] = (256,), seed: int = 0):
+        super(CriticFCNet, self).__init__()
+        self.seed = torch.manual_seed(seed)
+        state_rep_layers_dims = [state_size] + list(state_rep_layers)
+        self.state_rep_layers = nn.ModuleList(
+            [nn.Linear(in_layer, out_layer) for in_layer, out_layer in
+             zip(state_rep_layers_dims, state_rep_layers_dims[1:])])
+
+        critic_layers_dims = [action_size + list(state_rep_layers)[-1]] + list(critic_layers) + [1]
+        self.critic_layers = nn.ModuleList(
+            [nn.Linear(in_layer, out_layer) for in_layer, out_layer in
+             zip(critic_layers_dims, critic_layers_dims[1:])])
+
+        self.seed = torch.manual_seed(seed)
+
+        # self.reset_parameters()
+
+    def reset_parameters(self):
+        for layer in self.state_rep_layers:
+            layer.weight.data.uniform_(*hidden_init(layer))
+        for layer in self.critic_layers[:-1]:
+            layer.weight.data.uniform_(*hidden_init(layer))
+        self.critic_layers[-1].weight.data.uniform_(-3e-3, 3e-3)
+
+    def forward(self, state, action):
+        """Build a critic (value) network that maps (state, action) pairs -> Q-values."""
+
+        # Extract a (learnable) representation of the status
+        output = state
+        for layer in self.state_rep_layers:
+            output = F.leaky_relu(layer(output))
+        # Relay the concat(representation(state), output) to the critic Netword
+        output = torch.cat((output, action), dim=1)
+        for layer in self.critic_layers:
+            output = F.leaky_relu(layer(output))
+        return output
 
 
 class QConvNet(nn.Module):
@@ -57,24 +149,59 @@ class QConvNet(nn.Module):
         return self.fc2.out_features
 
 
-class QNetFactory:
-    """ Abstract factory"""
-
-
-class QFCNetFactory(QNetFactory):
-    """ Fully connected arch. Neural Net factory."""
+class NNFactory:
+    """ Abstract Network factory Q-Network, Actor, Critic"""
 
     def __init__(self, state_size, action_size, seed: int = 0):
         self.state_size = state_size
         self.action_size = action_size
         self.seed = seed
 
+    @abc.abstractmethod
+    def build(self, device) -> nn.Module:
+        """ abstract network builder"""
+
+
+class QFCNetFactory(NNFactory):
+    """ Fully connected arch. Neural Net factory."""
+
+    def __init__(self, state_size, action_size, layers: Tuple[int] = (128, 64, 64), seed: int = 0):
+        super(QFCNetFactory, self).__init__(state_size, action_size, seed)
+        self.layers = layers
+
     def build(self, device):
         """ build an FC based network """
-        return QFCNet(self.state_size, self.action_size, self.seed).to(device)
+        return QFCNet(self.state_size, self.action_size, self.layers, self.seed).to(device)
 
 
-class QConvNetFactory(QNetFactory):
+class ActorFCNetFactory(NNFactory):
+    """ Fully connected arch. Neural Net factory."""
+
+    def __init__(self, state_size, action_size, layers: Tuple[int] = (128, 64, 64), seed: int = 0):
+        super(ActorFCNetFactory, self).__init__(state_size, action_size, seed)
+        self.layers = layers
+
+    def build(self, device):
+        """ build an FC based network """
+        return ActorFCNet(self.state_size, self.action_size, self.layers, seed=self.seed).to(device)
+
+
+class CriticFCNetFactory(NNFactory):
+    """ Fully connected arch. Neural Net factory."""
+
+    def __init__(self, state_size, action_size, state_rep_layers: Tuple[int] = (256,),
+                 critic_layers: Tuple[int] = (256,), seed: int = 0):
+        super(CriticFCNetFactory, self).__init__(state_size, action_size, seed)
+        self.state_rep_layers = state_rep_layers
+        self.critic_layers = critic_layers
+
+    def build(self, device):
+        """ build an FC based network """
+        return CriticFCNet(self.state_size, self.action_size, self.state_rep_layers,
+                           self.critic_layers, self.seed).to(device)
+
+
+class QConvNetFactory(NNFactory):
     """ Fully connected arch. Neural Net factory."""
 
     def __init__(self, action_size, seed: int = 0):
