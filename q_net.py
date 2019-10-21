@@ -152,13 +152,13 @@ class QConvNet(nn.Module):
 class NNFactory:
     """ Abstract Network factory Q-Network, Actor, Critic"""
 
-    def __init__(self, state_size, action_size, seed: int = 0):
+    def __init__(self, state_size, action_size):
         self.state_size = state_size
         self.action_size = action_size
-        self.seed = seed
+
 
     @abc.abstractmethod
-    def build(self, device) -> nn.Module:
+    def build(self, device, seed) -> nn.Module:
         """ abstract network builder"""
 
 
@@ -166,39 +166,39 @@ class QFCNetFactory(NNFactory):
     """ Fully connected arch. Neural Net factory."""
 
     def __init__(self, state_size, action_size, layers: Tuple[int] = (128, 64, 64), seed: int = 0):
-        super(QFCNetFactory, self).__init__(state_size, action_size, seed)
+        super(QFCNetFactory, self).__init__(state_size, action_size)
         self.layers = layers
 
-    def build(self, device):
+    def build(self, device, seed:int = 0):
         """ build an FC based network """
-        return QFCNet(self.state_size, self.action_size, self.layers, self.seed).to(device)
+        return QFCNet(self.state_size, self.action_size, self.layers, seed).to(device)
 
 
 class ActorFCNetFactory(NNFactory):
     """ Fully connected arch. Neural Net factory."""
 
     def __init__(self, state_size, action_size, layers: Tuple[int] = (128, 64, 64), seed: int = 0):
-        super(ActorFCNetFactory, self).__init__(state_size, action_size, seed)
+        super(ActorFCNetFactory, self).__init__(state_size, action_size)
         self.layers = layers
 
-    def build(self, device):
+    def build(self, device, seed:int = 0):
         """ build an FC based network """
-        return ActorFCNet(self.state_size, self.action_size, self.layers, seed=self.seed).to(device)
+        return ActorFCNet(self.state_size, self.action_size, self.layers).to(device)
 
 
 class CriticFCNetFactory(NNFactory):
     """ Fully connected arch. Neural Net factory."""
 
     def __init__(self, state_size, action_size, state_rep_layers: Tuple[int] = (256,),
-                 critic_layers: Tuple[int] = (256,), seed: int = 0):
-        super(CriticFCNetFactory, self).__init__(state_size, action_size, seed)
+                 critic_layers: Tuple[int] = (256,)):
+        super(CriticFCNetFactory, self).__init__(state_size, action_size)
         self.state_rep_layers = state_rep_layers
         self.critic_layers = critic_layers
 
-    def build(self, device):
+    def build(self, device, seed:int = 0):
         """ build an FC based network """
         return CriticFCNet(self.state_size, self.action_size, self.state_rep_layers,
-                           self.critic_layers, self.seed).to(device)
+                           self.critic_layers, seed).to(device)
 
 
 class QConvNetFactory(NNFactory):
