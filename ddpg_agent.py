@@ -1,16 +1,14 @@
-import numpy as np
-import random
 import copy
+import random
 from typing import List, Tuple
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
-import torch.nn as nn
-
-from q_net import NNFactory
-from replay_buffer import Experience, BaseReplayBufferFactory
 from experience_replay_agent import ExperienceReplayAgent
+from q_net import NNFactory, soft_update
+from replay_buffer import Experience, BaseReplayBufferFactory
 
 LR_ACTOR = 1e-4  # learning rate of the actor
 LR_CRITIC = 3e-4  # learning rate of the critic
@@ -21,7 +19,8 @@ DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 class OUNoise:
     """Ornstein-Uhlenbeck process."""
-    def __init__(self, size, seed, mu=0., theta=0.15, sigma=0.2):
+
+    def __init__(self, size, seed, mu=0., theta=0.15, sigma=0.1):
         """Initialize parameters and noise process."""
         self.mu = mu * np.ones(size)
         self.theta = theta
@@ -59,23 +58,21 @@ def to_tensors(experiences: List[Experience], device) -> Tuple[torch.Tensor]:
     return states, actions, rewards, next_states, dones
 
 
-class LocalTarget:
+class LocalTarget(object):
     """ A local-target-optimizer net config"""
+
     def __init__(self, local, target, lr):
         self.local = local
         self.target = target
-        self._set_optimizer(lr)
-
-    def _set_optimizer(self, lr):
-        # TODO Generalize optimizer for the local target config
         self.optimizer = optim.Adam(self.local.parameters(), lr=lr)
 
 
-class Actor(LocalTarget):
-    def __init__(self, nn_factory, lr, seed:int=0):
+class Actor(object):
+    def __init__(self, nn_factory, lr, seed: int = 0):
         self.local = nn_factory.build(DEVICE, seed)
         self.target = nn_factory.build(DEVICE, seed)
-        self._set_optimizer(lr)
+        self.optimizer = optim.Adam(self.local.parameters(), lr=lr)
+
         # Noise process
         self.noise = OUNoise(self.local.action_size(), seed)
 
@@ -83,8 +80,8 @@ class Actor(LocalTarget):
         self.noise.reset()
 
     def act(self, state, add_noise=True):
-        """Returns actions for given state as per current policy."""
-        state = torch.from_numpy(state).float().to(DEVICE)
+        """Returns action for given state as per current policy."""
+        state = torch.from_numpy(state[None, ...]).float().to(DEVICE)
         self.local.eval()
         with torch.no_grad():
             action = self.local(state).cpu().data.numpy()
@@ -101,8 +98,7 @@ class Actor(LocalTarget):
         self.optimizer.step()
 
     def update_target(self, tau):
-        DDPGAgent.soft_update(self.local, self.target, tau)
-
+        soft_update(self.local, self.target, tau)
 
 
 class DDPGAgent(ExperienceReplayAgent):
@@ -111,7 +107,7 @@ class DDPGAgent(ExperienceReplayAgent):
     def __init__(self, actor_factory: NNFactory, critic_factory: NNFactory,
                  replay_buffer_factory: BaseReplayBufferFactory, actors_nbr=1,
                  seed: int = 0, batch_size: int = 128,
-                 step_to_update: int = 5, buffer_size: int = int(1e5), gamma: float = .999,
+                 step_to_update: int = 5, buffer_size: int = int(1e5), gamma: float = .99,
                  tau: float = 1e-3, episodes_window_size: int = 100, name=None,
                  lr_critic=LR_CRITIC, lr_actor=LR_ACTOR):
         """Initialize an Agent object.
@@ -121,7 +117,6 @@ class DDPGAgent(ExperienceReplayAgent):
         :param step_to_update: after which the local network is trained/and the target is updated
         :param buffer_size:  replay buffer size
         :param gamma: reward discount factor
-        :param lr: learning rate
         :param tau: Q soft update tau
         :param episodes_window_size: deque storing the [episodes_window_size] last episodes score
         """
@@ -130,71 +125,70 @@ class DDPGAgent(ExperienceReplayAgent):
                                         step_to_update=step_to_update, buffer_size=buffer_size,
                                         gamma=gamma,
                                         episodes_window_size=episodes_window_size, name=name)
+
         self.batch_size = batch_size  # initialize learning batch size
         self.tau = tau
         self.t_step = 0
 
-        # Actor Network (w/ Target Network)
-        # self.actors = [
-        #     LocalTarget(actor_factory.build(DEVICE), actor_factory.build(DEVICE), LR_ACTOR)
-        #     for _ in range(actors_nbr)]
-        self.actors = [ Actor(actor_factory, lr_actor, seed) for seed in range(actors_nbr)]
+        # Actors Network ( Local/Target Network)
+        self.actors = [Actor(actor_factory, lr_actor, seed) for seed in range(actors_nbr)]
+
         # Critic Network (w/ Target Network)
-        self.critic = LocalTarget(critic_factory.build(DEVICE), critic_factory.build(DEVICE),
-                                  lr_critic)
+        self.critic = LocalTarget(critic_factory.build(DEVICE), critic_factory.build(DEVICE), lr_critic)
 
-        # Noise process
-        # self.noise = OUNoise(actor_factory.action_size, seed)
+    def explore(self, env, extract_state, n_episodes=1800, max_t=1000, brain_name=None, solved_score=30.):
 
-    @staticmethod
-    def soft_update(local_model: nn.Module, target_model: nn.Module, tau: float):
-        """Soft update model parameters.
-        θ_target = τ*θ_local + (1 - τ)*θ_target
-
-        :param local_model: weights will be copied from
-        :param  target_model: weights will be copied to
-        :param tau: interpolation parameter
-        """
-        for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
-            target_param.data.copy_(tau * local_param.data + (1.0 - tau) * target_param.data)
-
-    def explore(self, env, extract_state, n_episodes=1800, max_t=1000, brain_name=None):
-        """ Explore/solve the env
+        """ Explore/Solve the env
 
         :param env: the environment to solve
         :param extract_state: state extractor function (env-info->state [np.ndarray])
         :param n_episodes: the max number of exploration episodes (the env expected to be solve before)
         :param max_t: maximum number of steps/actions with in an episode (if termination is not reached)
         :param brain_name: unity env brain_name
+        :param solved_score: if reached we consider the env. solved
 
         """
 
-        # TODO: A small agent/env compatibility sanity check.
+        # Checking the actors and critic networks before exploring
+
+        print('Critic.local check:', self.critic.local)
+        for actor in self.actors:
+            print(actor.local)
+
+        # TODO: A small agent/env compatibility sanity check. (will raise if the agent is not compatible with env)
+
         # Choose the first env brain name as default if not specified
         brain_name_ = brain_name
         if brain_name_ is None:
             brain_name_ = env.brain_names[0]
 
-
         for i_episode in range(1, n_episodes + 1):
             scores = np.zeros(len(self.actors))
+
             # reset the environment and get initial state
             states = extract_state(env.reset(train_mode=True)[brain_name_])
             # reset noise
             for actor in self.actors:
                 actor.reset_noise()
-            for _ in range(max_t):
-                actions = self.act(states)
-                env_info = env.step(actions)[brain_name_]  # send actions to the environment
 
+            for _ in range(max_t):
+                """ get actions from states (each routed to a relative actor)
+                 we get as many actions as we have actors"""
+                actions = self.act(states)
+
+                # TODO implement an actions ->  experiences helper function
+                # get the actions to the env.
+                env_info = env.step(actions)[brain_name_]  # send actions to the environment
                 next_states = env_info.vector_observations
                 rewards = env_info.rewards  # get the reward
                 dones = env_info.local_done  # see if episode has finished
                 scores += np.array(rewards)  # update the score
+
                 for state, action, reward, next_state, done in zip(states, actions, rewards, next_states, dones):
                     self.step(state, action, reward, next_state, done)
+
                 states = next_states  # roll over the state to next time step
-                if done:
+                if all(dones):  # finish when all the agents are done
                     break
 
             self.scores_window.append(np.mean(scores))  # save most recent score
@@ -205,7 +199,7 @@ class DDPGAgent(ExperienceReplayAgent):
             if i_episode % 100 == 0:
                 print('\rEpisode {}\tAverage Score: {:.2f}'.format(i_episode,
                                                                    np.mean(self.scores_window)))
-            if np.mean(self.scores_window) >= 13.0:
+            if np.mean(self.scores_window) >= solved_score:
                 print('\nEnvironment solved in {:d} episodes!\tAverage Score: {:.2f}'.format(
                     i_episode - 100, np.mean(
                         self.scores_window)))
@@ -214,8 +208,7 @@ class DDPGAgent(ExperienceReplayAgent):
 
     def step(self, state, action, reward, next_state, done):
         """ Update the replay buffer and eventually train (each self.steps_to_update)"""
-        self.memory.add(state, action, reward, next_state,
-                        done, 0)  # update replay buffer with the exp.
+        self.memory.add(state, action, reward, next_state, done, 0)  # update replay buffer
         # Learn every self.steps_to_update steps.
         self.t_step = (self.t_step + 1) % self.steps_to_update
         if self.t_step == 0:
@@ -226,20 +219,9 @@ class DDPGAgent(ExperienceReplayAgent):
     def act(self, states, add_noise=True):
         """Returns actions for given state as per current policy."""
         actions = np.zeros((len(states), self.actors[0].local.action_size()))
-        # for index, actor, state in zip (range(len(self.actors)), self.actors, states):
-        #     state = torch.from_numpy(state).float().to(DEVICE)
-        #     actor.local.eval()
-        #     with torch.no_grad():
-        #         action = actor.local(state).cpu().data.numpy()
-        #     actor.local.train()
-        #     if add_noise:
-        #         action += self.noise.sample()
-        #     actions[index,:] = action
-        # return np.clip(actions, -1, 1)
         for index, state in enumerate(states):
-            actions[index,:] = self.actors[index].act(state, add_noise=add_noise)
-        return  actions
-
+            actions[index, :] = self.actors[index].act(np.array(state), add_noise=add_noise)
+        return actions
 
     def reset(self):
         self.noise.reset()
@@ -260,32 +242,24 @@ class DDPGAgent(ExperienceReplayAgent):
             actions_next = actor.target(
                 next_states)  # predict next-state actions (with the current actor)
             # Q values from target models
-            Q_targets_next = self.critic.target(next_states, actions_next)
+            q_targets_next = self.critic.target(next_states, actions_next)
 
             # Compute Q targets for current states (y_i)
-            Q_targets = rewards + (self.gamma * Q_targets_next * (1 - dones))
+            q_targets = rewards + (self.gamma * q_targets_next * (1 - dones))
             # Compute critic loss
-            Q_expected = self.critic.local(states, actions)
-            critic_loss = F.mse_loss(Q_expected, Q_targets)
+            q_expected = self.critic.local(states, actions)
+            critic_loss = F.mse_loss(q_expected, q_targets)
             # Minimize the loss
             self.critic.optimizer.zero_grad()
             critic_loss.backward()
             # # clipping
-            # torch.nn.utils.clip_grad_norm(self.critic.local.parameters(), 1)
+            # torch.nn.utils.clip_grad_norm_(self.critic.local.parameters(), 1)
             self.critic.optimizer.step()
 
         for actor in self.actors:
-            # # update actors
-            # actor_loss = -self.critic.local(states, actor.local(states)).mean()
-            # # Minimize the loss
-            # actor.optimizer.zero_grad()
-            # actor_loss.backward()
-            # actor.optimizer.step()
             actor.update(states, self.critic)
 
         # soft-update target networks (critic and actors)
-        DDPGAgent.soft_update(self.critic.local, self.critic.target, self.tau)
+        soft_update(self.critic.local, self.critic.target, self.tau)
         for actor in self.actors:
             actor.update_target(self.tau)
-
-
