@@ -4,12 +4,19 @@ import random
 import abc
 from collections import namedtuple, deque
 import torch
+import logging
 
 
 class Experience(namedtuple("Experience",
                             field_names=['error', 'state', 'action', 'reward', 'next_state',
                                          'done'])):
     def __lt__(self, other):
+        return self.highest_error(other)
+
+    def highest_reward(self, other):
+        return self.reward > other.reward
+
+    def highest_error(self, other):
         return self.error > other.error  # reversed to sort highest error first
 
 
@@ -24,6 +31,8 @@ class BaseReplayBuffer:
         """
         self.buffer_size = buffer_size
         self.batch_size = batch_size
+
+        logging.info(f'Building replay buffer with size {buffer_size}')
 
         random.seed(seed)
 
