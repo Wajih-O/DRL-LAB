@@ -39,11 +39,11 @@ Because it was fun watching the agent learning and struggling through the env. A
 well towards the solved state solution. This behavior is captured  an average  score of 26 over the last 100 episodes. 
 
 
-![agent-training|40%](images/Reacher_26.7_resized.gif )
+![agent-training](images/Reacher_26.7_resized.gif )
 
 The average last 100 episodes score evolved as shown in the next plot.
 
-![agent-training|40%](images/agent_score_ma_100.png )
+![agent-training](images/agent_score_ma_100.png )
 
 
 
