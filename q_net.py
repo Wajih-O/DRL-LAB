@@ -14,6 +14,18 @@ def hidden_init(layer):
     return (-lim, lim)
 
 
+def soft_update(local_model: nn.Module, target_model: nn.Module, tau: float):
+    """Soft update model parameters.
+    θ_target = τ*θ_local + (1 - τ)*θ_target
+
+    :param local_model: weights will be copied from
+    :param target_model: weights will be copied to
+    :param tau: interpolation parameter (moving average param)
+    """
+    for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
+        target_param.data.copy_(tau * local_param.data + (1.0 - tau) * target_param.data)
+
+
 class QFCNet(nn.Module):
     """Q fully-connected-Network . 2x(FC hidden layer + Relu activation) + FC"""
 
@@ -56,11 +68,15 @@ class ActorFCNet(nn.Module):
         """
 
         super(ActorFCNet, self).__init__()
+
         self.seed = torch.manual_seed(seed)
-        self.layers_dim = [state_size] + list(layers) + [action_size]
-        self.layers = nn.ModuleList(
-            [nn.Linear(in_layer, out_layer) for in_layer, out_layer in
-             zip(self.layers_dim, self.layers_dim[1:])])
+        layers_dim = [state_size] + list(layers) + [action_size]
+        self.layers_dim = [(in_layer, out_layer) for in_layer, out_layer in zip(layers_dim, layers_dim[1:])]
+        self.network = []
+        self.batch_norm = []
+        # building actor module
+        self.layers = nn.ModuleList([nn.Linear(in_layer, out_layer) for in_layer, out_layer in self.layers_dim])
+        self.batch_norm = nn.ModuleList([nn.BatchNorm1d(out_layer) for _, out_layer in self.layers_dim])
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -71,8 +87,8 @@ class ActorFCNet(nn.Module):
     def forward(self, state):
         """Build a network that maps state -> action values."""
         nn_output = state
-        for layer in self.layers[:-1]:
-            nn_output = F.relu(layer(nn_output))
+        for bn, layer in zip(self.batch_norm, self.layers[:-1]):
+            nn_output = bn(F.relu(layer(nn_output)))
         return F.tanh(self.layers[-1](nn_output))
 
     def action_size(self):
@@ -99,9 +115,10 @@ class CriticFCNet(nn.Module):
 
         self.seed = torch.manual_seed(seed)
 
-        # self.reset_parameters()
+        self.reset_parameters()
 
     def reset_parameters(self):
+        """ initialize the network"""
         for layer in self.state_rep_layers:
             layer.weight.data.uniform_(*hidden_init(layer))
         for layer in self.critic_layers[:-1]:
@@ -156,7 +173,6 @@ class NNFactory:
         self.state_size = state_size
         self.action_size = action_size
 
-
     @abc.abstractmethod
     def build(self, device, seed) -> nn.Module:
         """ abstract network builder"""
@@ -169,7 +185,7 @@ class QFCNetFactory(NNFactory):
         super(QFCNetFactory, self).__init__(state_size, action_size)
         self.layers = layers
 
-    def build(self, device, seed:int = 0):
+    def build(self, device, seed: int = 0):
         """ build an FC based network """
         return QFCNet(self.state_size, self.action_size, self.layers, seed).to(device)
 
@@ -181,7 +197,7 @@ class ActorFCNetFactory(NNFactory):
         super(ActorFCNetFactory, self).__init__(state_size, action_size)
         self.layers = layers
 
-    def build(self, device, seed:int = 0):
+    def build(self, device, seed: int = 0):
         """ build an FC based network """
         return ActorFCNet(self.state_size, self.action_size, self.layers).to(device)
 
@@ -195,7 +211,7 @@ class CriticFCNetFactory(NNFactory):
         self.state_rep_layers = state_rep_layers
         self.critic_layers = critic_layers
 
-    def build(self, device, seed:int = 0):
+    def build(self, device, seed: int = 0):
         """ build an FC based network """
         return CriticFCNet(self.state_size, self.action_size, self.state_rep_layers,
                            self.critic_layers, seed).to(device)
