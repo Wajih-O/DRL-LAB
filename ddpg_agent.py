@@ -25,8 +25,9 @@ class OUNoise:
         self.mu = mu * np.ones(size)
         self.theta = theta
         self.sigma = sigma
-        self.seed = random.seed(seed)
-        self.reset()
+        self.seed = seed
+        random.seed(self.seed)  # to check
+        self.state = copy.copy(self.mu)
 
     def reset(self):
         """Reset the internal state (= noise) to mean (mu)."""
@@ -164,7 +165,6 @@ class DDPGAgent(ExperienceReplayAgent):
 
         for i_episode in range(1, n_episodes + 1):
             scores = np.zeros(len(self.actors))
-
             # reset the environment and get initial state
             states = extract_state(env.reset(train_mode=True)[brain_name_])
             # reset noise
@@ -183,7 +183,8 @@ class DDPGAgent(ExperienceReplayAgent):
                 rewards = env_info.rewards  # get the reward
                 dones = env_info.local_done  # see if episode has finished
                 scores += np.array(rewards)  # update the score
-
+                # if any(rewards):
+                    # print(f"rewards {rewards}")
                 for state, action, reward, next_state, done in zip(states, actions, rewards, next_states, dones):
                     self.step(state, action, reward, next_state, done)
 
@@ -194,13 +195,13 @@ class DDPGAgent(ExperienceReplayAgent):
             self.scores_window.append(np.mean(scores))  # save most recent score
             self.scores.append(np.mean(scores))  # save most recent score
 
-            print('\rEpisode {}\tAverage Score: {:.2f}'.format(i_episode,
+            print('\rEpisode {}\tAverage Score: {:.4f}'.format(i_episode,
                                                                np.mean(self.scores_window)), end="")
             if i_episode % 100 == 0:
                 print('\rEpisode {}\tAverage Score: {:.2f}'.format(i_episode,
                                                                    np.mean(self.scores_window)))
             if np.mean(self.scores_window) >= solved_score:
-                print('\nEnvironment solved in {:d} episodes!\tAverage Score: {:.2f}'.format(
+                print('\nEnvironment solved in {:d} episodes!\tAverage Score: {:.4f}'.format(
                     i_episode - 100, np.mean(
                         self.scores_window)))
                 self.save()
@@ -217,7 +218,7 @@ class DDPGAgent(ExperienceReplayAgent):
                 self.learn()
 
     def act(self, states, add_noise=True):
-        """Returns actions for given state as per current policy."""
+        """Route states to actors and return actions."""
         actions = np.zeros((len(states), self.actors[0].local.action_size()))
         for index, state in enumerate(states):
             actions[index, :] = self.actors[index].act(np.array(state), add_noise=add_noise)
